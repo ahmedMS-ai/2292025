@@ -1,0 +1,39 @@
+name: Snapshot page (SingleFile)
+
+on:
+  workflow_dispatch: {}          # تشغيل يدوي من تبويب Actions
+  schedule:
+    - cron: '0 3 * * *'         # (اختياري) تشغيل يومي 03:00 UTC
+
+permissions:
+  contents: write                # يسمح للـ Action يعمل commit
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate snapshot with SingleFile
+        run: |
+          mkdir -p docs
+          npx -y single-file-cli \
+            "https://felo.ai/en/page/preview/KrcyXakexYzy3cNL2rGJKC?business_type=AGENT_THREAD" \
+            --browser-headless \
+            --browser-args="--no-sandbox" \
+            --dump-content \
+            --output "docs/index.html"
+
+      - name: Commit & push snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          git commit -m "docs: update snapshot" || echo "No changes to commit"
+          git push
