@@ -10,8 +10,9 @@ body {background:transparent !important;}
 </style>
 """, unsafe_allow_html=True)
 
-# بدّل هذا بالسطر الفعلي بعد تفعيل Pages:
-GH_PAGES_URL = "https://<USERNAME>.github.io/<REPO>/"
+# بعد تفعيل GitHub Pages على هذا الريبو (branch: main, folder: /docs)
+# يصبح رابط الصفحة:
+GH_PAGES_URL = "https://ahmedms-ai.github.io/2292025/"
 
 st.components.v1.iframe(GH_PAGES_URL, height=3600, scrolling=True)
 st.markdown(f"[فتح الصفحة كاملة ↗]({GH_PAGES_URL})")
