@@ -26,7 +26,7 @@ jobs:
           npx -y single-file-cli \
             "https://felo.ai/en/page/preview/KrcyXakexYzy3cNL2rGJKC?business_type=AGENT_THREAD" \
             --browser-headless \
-            --browser-args="--no-sandbox" \
+            --browser-args '["--no-sandbox","--disable-gpu","--disable-dev-shm-usage"]' \
             --dump-content \
             --output "docs/index.html"
 
