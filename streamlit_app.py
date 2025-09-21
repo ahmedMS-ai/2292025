@@ -4,7 +4,7 @@ import streamlit as st
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
-# ===== Streamlit page chrome off =====
+# ===== Streamlit: بدون حواف/قوائم =====
 st.set_page_config(page_title="Mirror", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""
 <style>
@@ -15,7 +15,7 @@ body {background: transparent !important;}
 </style>
 """, unsafe_allow_html=True)
 
-# ===== ثابت: رابط صفحتك =====
+# ===== الرابط الثابت =====
 PAGE_URL = "https://felo.ai/en/page/preview/KrcyXakexYzy3cNL2rGJKC?business_type=AGENT_THREAD"
 
 UA = {"user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -30,51 +30,43 @@ def fetch_url(url: str):
     return r.text, r.url
 
 def absolutize_attr(tag, attr, base):
-    val = tag.get(attr)
-    if not val:
-        return
-    tag[attr] = urljoin(base, val)
+    v = tag.get(attr)
+    if v: tag[attr] = urljoin(base, v)
 
 def absolutize_links(soup: BeautifulSoup, base_url: str):
-    # <base> واحد لضبط كل النسبيات
     if not soup.head:
         soup.insert(0, soup.new_tag("head"))
-    for b in soup.find_all("base"):
-        b.decompose()
+    for b in soup.find_all("base"): b.decompose()
     soup.head.insert(0, soup.new_tag("base", href=base_url))
 
-    # مهم لصور وروابط وفيد
-    for a in soup.find_all("a"):
-        absolutize_attr(a, "href", base_url)
+    for a in soup.find_all("a"): absolutize_attr(a, "href", base_url)
     for img in soup.find_all("img"):
         absolutize_attr(img, "src", base_url)
         absolutize_attr(img, "srcset", base_url)
     for s in soup.find_all(["script","link","source","video","audio","track"]):
         for attr in ("src","href","poster"):
-            if s.has_attr(attr):
-                absolutize_attr(s, attr, base_url)
+            if s.has_attr(attr): absolutize_attr(s, attr, base_url)
 
 def drop_csp_and_noscript(soup: BeautifulSoup):
-    # امسح أي CSP داخل الصفحة المنسوخة
     for m in soup.find_all("meta", attrs={"http-equiv": re.compile("content-security-policy", re.I)}):
         m.decompose()
-    # noscript أحيانًا يعبث بالشكل داخل iframe
-    for ns in soup.find_all("noscript"):
-        ns.decompose()
+    for ns in soup.find_all("noscript"): ns.decompose()
 
 def rewrite_css_urls(css_text: str, base_url: str) -> str:
-    # حوّل url(...) داخل CSS إلى مطلقة
     def repl(m):
         u = m.group(1).strip('\'"')
         return f'url("{urljoin(base_url, u)}")'
     return re.sub(r"url\(([^)]+)\)", repl, css_text)
 
-def inline_css_js(soup: BeautifulSoup, base_url: str, max_bytes_css=800_000, max_bytes_js=600_000):
+def inline_css_js(soup: BeautifulSoup, base_url: str,
+                  max_bytes_css=1_800_000, max_bytes_js=1_000_000):
+    """ضمّن أكبر قدر ممكن من CSS/JS + أصلح SRI/CORS وروابط url(...) داخل CSS."""
     css_inlined = 0
-    # 1) CSS عادي + preload as=style (Next.js)
+
+    # 1) link rel=stylesheet أو rel=preload as=style
     for link in list(soup.find_all("link")):
-        rel = (link.get("rel") or [])
-        as_attr = link.get("as")
+        rel = [r.lower() for r in (link.get("rel") or [])]
+        as_attr = (link.get("as") or "").lower()
         href = link.get("href")
 
         is_stylesheet = any("stylesheet" in r for r in rel)
@@ -93,16 +85,27 @@ def inline_css_js(soup: BeautifulSoup, base_url: str, max_bytes_css=800_000, max
                 link.replace_with(style)
                 css_inlined += 1
             else:
-                link["href"] = absurl  # ابقيها خارجية لكن مطلقة
+                # على الأقل اجعلها خارجية مطلقة + شِغّلها فورًا
+                link["href"] = absurl
+                link["rel"] = "stylesheet"
+                for a in ("onload","integrity","crossorigin"): link.attrs.pop(a, None)
         except Exception:
             link["href"] = absurl
+            link["rel"] = "stylesheet"
+            for a in ("onload","integrity","crossorigin"): link.attrs.pop(a, None)
 
-    # 2) JS — أزل SRI/CORS دائمًا، وضمّن لو الحجم مناسب
+    # 2) <style data-n-href="..."> (Next.js) — لو فاضي حوّله ل<link rel=stylesheet>
+    for st_tag in list(soup.find_all("style")):
+        data_href = st_tag.get("data-n-href") or st_tag.get("data-href")
+        if data_href and not (st_tag.string or "").strip():
+            href_abs = urljoin(base_url, data_href)
+            link = soup.new_tag("link", rel="stylesheet", href=href_abs)
+            st_tag.replace_with(link)
+
+    # 3) JS — أزل SRI/CORS دومًا، وضمّن لو ممكن
     js_inlined = 0
-    for s in list(soup.find_all("script")):
+    for s in list(soup.find_all("script", src=True)):
         src = s.get("src")
-        if not src:
-            continue
         absurl = urljoin(base_url, src)
         try:
             content = requests.get(absurl, headers=UA, timeout=20).content
@@ -126,32 +129,48 @@ def unsandbox_iframes(soup: BeautifulSoup):
     n = 0
     for fr in soup.find_all("iframe"):
         if fr.has_attr("sandbox"):
-            del fr["sandbox"]
-            n += 1
-    if n:
-        print(f"[mirror] unsandboxed iframes: {n}", file=sys.stderr)
+            del fr["sandbox"]; n += 1
+    if n: print(f"[mirror] unsandboxed iframes: {n}", file=sys.stderr)
 
-def add_qol_script_and_css(soup: BeautifulSoup):
+def add_runtime_fixes(soup: BeautifulSoup):
+    """تشغيل أي preload كـ stylesheet + دعم الروابط #hash + تمديد الارتفاع."""
     extra_css = soup.new_tag("style")
     extra_css.string = "html,body{margin:0;padding:0;height:100%;overflow:auto} body{background:transparent}"
     if soup.head: soup.head.append(extra_css)
     else: soup.insert(0, extra_css)
 
     tail = soup.new_tag("script")
-    tail.string = """
+    tail.string = r"""
     (function(){
       try {
+        // فعّل preload as=style فورًا
+        document.querySelectorAll('link[rel="preload"][as="style"]').forEach(function(l){
+          if(l.rel !== "stylesheet"){ l.rel = "stylesheet"; }
+          l.removeAttribute("onload");
+          l.removeAttribute("integrity");
+          l.removeAttribute("crossorigin");
+        });
+        // لو في <style data-n-href> فاضي، حمّله كرابط ستايل خارجي
+        document.querySelectorAll('style[data-n-href],style[data-href]').forEach(function(s){
+          var href = s.getAttribute('data-n-href') || s.getAttribute('data-href');
+          if(href && !s.textContent.trim()){
+            var l = document.createElement('link');
+            l.rel = 'stylesheet'; l.href = href;
+            document.head.appendChild(l);
+          }
+        });
+        // سكرول سلس للهاش
         document.addEventListener("click", function(e){
-          const t = e.target.closest('a[href^="#"], [data-nav]');
+          var t = e.target.closest('a[href^="#"], [data-nav]');
           if(!t) return;
-          const sel = t.getAttribute("data-nav") || t.getAttribute("href");
+          var sel = t.getAttribute("data-nav") || t.getAttribute("href");
           if(!sel || sel === "#") return;
-          const el = document.querySelector(sel);
+          var el = document.querySelector(sel);
           if(!el) return console.warn("[mirror] target not found:", sel);
           e.preventDefault();
           el.scrollIntoView({behavior:"smooth", block:"start"});
         });
-        console.log("[mirror] ready");
+        console.log("[mirror] runtime fixes ready");
       } catch(err){ console.error("[mirror] boot failed", err); }
     })();
     """
@@ -167,23 +186,17 @@ def flatten(url: str) -> str:
     absolutize_links(soup, final_url)
     inline_css_js(soup, final_url)
     unsandbox_iframes(soup)
-    add_qol_script_and_css(soup)
+    add_runtime_fixes(soup)
 
     print(f"[mirror] after prep: scripts={len(soup.find_all('script'))}, "
           f"links={len(soup.find_all('link'))}", file=sys.stderr)
-
     return str(soup)
 
 # ===== Render =====
 try:
     html_flat = flatten(PAGE_URL)
-    # زد الارتفاع لتأخذ الصفحة طولها؛ غيّره لو احتجت
-    st.components.v1.html(html_flat, height=2600, scrolling=True)
+    st.components.v1.html(html_flat, height=3200, scrolling=True)  # زوّد/قلّل حسب الطول
 except requests.exceptions.RequestException as e:
-    st.error("فشل في جلب الصفحة من المصدر.")
-    st.code(repr(e))
-    raise
+    st.error("فشل في جلب الصفحة من المصدر."); st.code(repr(e)); raise
 except Exception as e:
-    st.error("تعذّر عرض الصفحة.")
-    st.exception(e)
-    raise
+    st.error("تعذّر عرض الصفحة."); st.exception(e); raise
